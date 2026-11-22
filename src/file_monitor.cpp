@@ -137,31 +137,11 @@ void FileMonitor::detect_changes()
             memset(&u, 0, sizeof(UpdateObject)); 
 
             u.line = i;
-            u.col_start = 0;
-            u.col_end = max(old_line.length(), new_line.length());
+            find_diff(old_line, new_line, u);
             u.timestamp_ms = now++; 
 
             strncpy(u.user_id, m_uid.c_str(), MAX_UID_SIZE - 1);
             u.user_id[MAX_UID_SIZE - 1] = '\0';
-
-            strncpy(u.new_text, new_line.c_str(), MAX_TEXT_SIZE - 1);
-            u.new_text[MAX_TEXT_SIZE - 1] = '\0';
-
-            strncpy(u.old_text, old_line.c_str(), MAX_TEXT_SIZE - 1);
-            u.old_text[MAX_TEXT_SIZE - 1] = '\0';
-
-            if (old_line.empty() && !new_line.empty())
-            {
-                u.op = UpdateObject::Type::Insert;
-            }
-            else if (!old_line.empty() && new_line.empty())
-            {
-                u.op = UpdateObject::Type::Delete;
-            }
-            else
-            {
-                u.op = UpdateObject::Type::Replace;
-            }
 
             updates.push_back(u);
         }
