@@ -1,4 +1,4 @@
-# SyncText: The Ultimate Architecture & Interview Master Guide
+# SyncText: Complete Architecture & Implementation Guide
 
 > **Project Name**: SyncText – A Decentralized, Lock-Free, CRDT-Based Collaborative Text Editor  
 > **Platform**: Linux (Ubuntu 24.04 LTS, x86_64) | **Language**: C++17 | **Build Flags**: `-lpthread -lrt`  
@@ -7,7 +7,7 @@
 ---
 
 ## Table of Contents
-1. [The 30-Second Elevator Pitch](#1-the-30-second-elevator-pitch)
+1. [The 30-Second Summary](#1-the-30-second-summary)
 2. [High-Level Architecture & The Dual-IPC Model](#2-high-level-architecture--the-dual-ipc-model)
 3. [Deep Operating Systems & Memory Architecture](#3-deep-operating-systems--memory-architecture)
 4. [Lock-Free Programming & Atomic Primitives](#4-lock-free-programming--atomic-primitives)
@@ -20,12 +20,12 @@
    - [5.6 file_monitor.cpp (Local Loop & Echo Neutralizer)](#56-file_monitorcpp-local-loop--echo-neutralizer)
    - [5.7 main.cpp (Thread Orchestration)](#57-maincpp-thread-orchestration)
 6. [The "Infinite Echo Loop" & Its Solution](#6-the-infinite-echo-loop--its-solution)
-7. [Differences Between Assignment PDF & Actual Code](#7-differences-between-assignment-pdf--actual-code)
-8. [Master Interview Questions & Answers](#8-master-interview-questions--answers)
+7. [Comprehensive Questions & Answers](#7-comprehensive-questions--answers)
+8. [Compilation, Execution & Testing Guide](#8-compilation-execution--testing-guide)
 
 ---
 
-## 1. The 30-Second Elevator Pitch
+## 1. The 30-Second Summary
 
 > *"SyncText is a decentralized, lock-free collaborative text editor written in C++17 for Linux. It allows multiple concurrent processes to edit local text files simultaneously without a central server. It utilizes POSIX Shared Memory for peer discovery and global batching, POSIX Message Queues for asynchronous inter-process communication, and a Last-Writer-Wins (LWW) Conflict-Free Replicated Data Type (CRDT) algorithm to ensure mathematical convergence and eventual consistency across all replicas."*
 
@@ -35,7 +35,7 @@
 
 ### Why Two Different IPC Mechanisms? (The Fan-In vs. Fan-Out Model)
 
-Interviewers frequently ask: *"If you have Shared Memory, why do you need Message Queues?"*
+A common architectural question is: *"If you have Shared Memory, why do you need Message Queues?"*
 
 ```
                      FAN-IN (Collection)
@@ -121,7 +121,11 @@ Low Addresses (0x000000000000)
 1. **Crash Deadlock Immunity**: If a process crashes while holding an inter-process mutex, the entire system deadlocks permanently. Atomics have no critical section to hold; a process crash cannot deadlock peers.
 2. **Performance**: Executed directly in CPU hardware cache in nanoseconds without kernel `futex` context switching.
 
-### C. The 4 Atomic Implementations in SyncText:
+### C. `compare_exchange_strong` vs. `compare_exchange_weak`
+* **`compare_exchange_weak`**: Can experience **spurious failures** (returning `false` even if the value matched `expected`). It is common on Load-Linked/Store-Conditional (LL/SC) architectures like ARM and is used inside tight `while` loops.
+* **`compare_exchange_strong`**: Guarantees no spurious failures. We used `strong` in SyncText because our registration loop checks each array slot once sequentially (`for i = 0 to 4`); a spurious failure would cause a slot to be falsely skipped.
+
+### D. The 4 Atomic Implementations in SyncText:
 
 | Primitive Used | Location | Purpose | How It Works |
 | :--- | :--- | :--- | :--- |
@@ -176,7 +180,15 @@ struct UpdateObject {
 * **Stale Queue Cleanup**: Calls `mq_unlink(mq_name.c_str())` before `mq_open` to flush old queues left behind by crashed runs.
 * **Polling vs. Blocking Trade-off**:
   - Configured with `O_NONBLOCK` + `this_thread::sleep_for(100ms)`.
-  - *Trade-off*: Easy graceful thread exit, but introduces 100ms polling latency. In a single-purpose thread, a blocking `mq_receive()` is strictly more CPU-efficient.
+  - *Trade-off*: Allows the thread to wake up periodically and check an exit flag for graceful shutdown. However, it introduces 100ms polling latency and minor CPU wakeups.
+  - *Production Alternative*: A blocking `mq_receive()` has **zero CPU overhead** and **zero latency** (instant wakeup). To shut down cleanly, the main thread can send a dummy `SHUTDOWN` message to its own queue upon exit.
+* **The `epoll` Discussion**:
+  - For a thread watching a single queue, blocking `mq_receive()` is ideal.
+  - However, in a full production reactor architecture, an **`epoll` event loop** could multiplex:
+    1. A Linux `inotify` descriptor for file saves,
+    2. A POSIX Message Queue descriptor (`mqd_t`) or `mq_notify` for peer updates,
+    3. A `signalfd` descriptor for OS signals (`SIGINT`).
+    This would unite file I/O and messaging into a single non-blocking event-driven loop with 0% idle CPU usage.
 
 ---
 
@@ -259,30 +271,87 @@ Runs **3 concurrent threads** per process:
 
 ---
 
-## 7. Differences Between Assignment PDF & Actual Code
+## 7. Comprehensive Questions & Answers
 
-| Feature | Assignment PDF | Actual Implementation | Engineering Rationale |
-| :--- | :--- | :--- | :--- |
-| **Merge Granularity** | Character grid `map<(line,col), char>` | Range-level LWW with Right-to-Left replacement | Avoids the index-shifting problem that corrupts character grids when text lengths change. |
-| **Sync Threshold ($N=5$)** | Local counter per user | Global Shared Memory Buffer (`GlobalBuffer`) | Prevents low-frequency users from having their edits stranded indefinitely. |
-| **Registry Contents** | Store `user_id` and `queue_name` | Store only `user_id` | Deterministic derivation (`/queue_<uid>`) saves shared memory space. |
-| **Polling Interval** | Suggested 2.0 seconds | Optimized to 400 milliseconds | Provides a snappy, real-time responsive user experience. |
-
----
-
-## 8. Master Interview Questions & Answers
-
-#### Q1: "Why did you choose CRDT over Operational Transformation (OT)?"
+#### Q1: "Why choose CRDT over Operational Transformation (OT)?"
 > **Answer**: OT requires a centralized sequencer to transform concurrent operations (like Google Docs historically did). SyncText is fully decentralized; each node must merge out-of-order edits independently. CRDT guarantees mathematical convergence (commutativity, associativity, idempotency) without a coordinator.
 
-#### Q2: "How do you break ties if two edits have the exact same timestamp?"
-> **Answer**: We compare author user IDs alphabetically (`strcmp(a.user_id, b.user_id) < 0`). Because alphabetical ordering is identical on all machines, every node independently selects the exact same winner.
+#### Q2: "How are ties broken if two edits have the exact same timestamp?"
+> **Answer**: Author user IDs are compared alphabetically (`strcmp(a.user_id, b.user_id) < 0`). Because alphabetical ordering is identical on all machines, every node independently selects the exact same winner.
 
 #### Q3: "What is the consequence of Last-Writer-Wins (LWW)?"
 > **Answer**: Simplicity and deterministic convergence. The trade-off is lost intent: if two users edit the exact same column range concurrently, the later edit completely overwrites the earlier one rather than interleaving characters.
 
-#### Q4: "Why link `-lpthread` and `-lrt`?"
+#### Q4: "Why link with `-lpthread` and `-lrt`?"
 > **Answer**: `-lpthread` links POSIX multi-threading support (`std::thread`). `-lrt` links POSIX real-time extensions, which are required on Linux for shared memory (`shm_open`) and message queues (`mq_open`).
 
-#### Q5: "How did you ensure lock-free synchronization across processes?"
+#### Q5: "How is lock-free synchronization guaranteed across processes?"
 > **Answer**: By using `std::atomic<bool>` and `std::atomic<int>` in POSIX Shared Memory, utilizing `compare_exchange_strong` for slot reservations and leader election, `fetch_add` for index reservations, and `acquire-release` memory fences to ensure CPU cache coherency.
+
+#### Q6: "Why use `compare_exchange_strong` instead of `compare_exchange_weak`?"
+> **Answer**: `compare_exchange_weak` can fail spuriously on LL/SC architectures (like ARM) and is intended for tight `while` loops. Our slot-acquisition loop checks each array slot once sequentially (`for i = 0 to 4`); using `strong` guarantees that a free slot is never falsely skipped.
+
+#### Q7: "Why is `mq_receive` non-blocking with a 100ms sleep? Wouldn't blocking be better?"
+> **Answer**: A non-blocking poll with sleep was chosen so the thread can periodically wake up to check thread termination flags for clean shutdown. However, for maximum efficiency, a blocking `mq_receive()` is superior because it eliminates polling latency and reduces idle CPU usage to zero. In production, clean shutdown with a blocking queue is accomplished by sending a self-targeted shutdown message upon exit.
+
+#### Q8: "Could `epoll` be used instead of multi-threading?"
+> **Answer**: Yes. In a production reactor design, `epoll` could multiplex a Linux `inotify` file descriptor, POSIX message queue descriptors, and `signalfd` on a single thread. For SyncText's scope, a dedicated thread per task (file monitoring, message listening, and global monitoring) provides clean separation of concerns.
+
+#### Q9: "What happens if a user process crashes or receives `kill -9` without a clean exit?"
+> **Answer**: Because registration uses atomic flags without mutexes, a crash will never deadlock the remaining processes. However, `kill -9` prevents signal handlers from running, leaving the slot marked `active = true` (a ghost user). In production, this is solved by having each user write a heartbeat timestamp (`atomic<uint64_t> last_seen`) or checking process IDs using `kill(pid, 0)`.
+
+#### Q10: "What happens if physical system clocks drift across different machines?"
+> **Answer**: Physical clock drift could cause a machine with a fast clock to systematically win Last-Writer-Wins conflicts. In a multi-machine network, physical timestamps would be augmented or replaced with **Lamport Logical Timestamps** or **Vector Clocks** to track causal precedence independently of physical hardware clocks.
+
+#### Q11: "What are the limitations of a fixed 256-byte text buffer and how can it be scaled?"
+> **Answer**: Using a fixed-size `char new_text[256]` ensures `UpdateObject` is trivially copyable for raw IPC memory copying, but it truncates edits longer than 255 characters. To scale to arbitrary lengths, we would use chunking/paging or variable-length Type-Length-Value (TLV) packets.
+
+---
+
+## 8. Compilation, Execution & Testing Guide
+
+### A. Compilation Command
+```bash
+g++ -std=c++17 src/*.cpp -lpthread -lrt -o editor
+```
+* `-std=c++17`: Enables C++17 language features.
+* `-lpthread`: Links POSIX threads (`std::thread`).
+* `-lrt`: Links POSIX real-time extensions (required for `shm_open`, `mq_open`).
+
+---
+
+### B. Running Multi-User Simulation
+
+Open **3 separate Linux terminal windows**:
+
+**Terminal 1 (User 1):**
+```bash
+./editor user_1
+```
+
+**Terminal 2 (User 2):**
+```bash
+./editor user_2
+```
+
+**Terminal 3 (User 3):**
+```bash
+./editor user_3
+```
+
+---
+
+### C. Testing Scenarios
+
+#### Scenario 1: Basic Synchronization (Non-Conflicting Edits)
+1. Open `user_1_doc.txt` in any text editor (`nano`, `vim`, or `gedit`).
+2. Change Line 0 from `"int x = 10;"` to `"int x = 50;"` and save.
+3. Open `user_2_doc.txt` and change Line 1 from `"int y = 20;"` to `"int y = 100;"` and save.
+4. Make 3 more edits across any files until the global buffer reaches **5 total updates**.
+5. **Expected Result**: All 3 terminal displays update automatically and display both `x = 50` and `y = 100`.
+
+#### Scenario 2: Concurrent Conflicting Edits (LWW Verification)
+1. User 1 edits Line 0 to `"int x = 75;"` and saves.
+2. User 2 almost simultaneously edits Line 0 to `"int x = 99;"` and saves.
+3. Once 5 total updates accumulate, the Global Broadcast module compares timestamps on Line 0, columns 8–10.
+4. **Expected Result**: The edit with the later timestamp wins. All 3 terminals converge to `"int x = 99;"`.
